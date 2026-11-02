@@ -1,79 +1,202 @@
+require("dotenv").config();
 const express = require("express");
+const cors = require("cors");
+
+
+
+
+const pool = require("./db");
 const app = express();
 const PORT = process.env.PORT || 3000;
-const cors = require("cors");
-app.use(cors({ origin: "http://localhost:5173"}));
+app.use(
+cors({
+origin: process.env.CLIENT_ORIGIN || "http://localhost:5173",
+})
+);
 app.use(express.json());
-// Sample in-memory data; resets after a server restart.
-let courses = [
-{ id: 1, title: "REST API Fundamentals", duration: 4 },
-{ id: 2, title: "Node.js Basics", duration: 6 }
-];
-let nextId = 3;
+// Validate a course ID from the URL.
+function getValidId(value) {
+const id = Number(value);
+return Number.isInteger(id) && id > 0 ? id : null;
+}
+// Validate the course data for POST and PUT.
+function validateCourse(body) {
+const { title, duration } = body || {};
+const errors = [];
+if (typeof title !== "string" || title.trim().length < 3) {
+errors.push("title must be a string with at least 3 characters");
+}
+if (!Number.isInteger(duration) || duration < 1 || duration > 100) {
+errors.push("duration must be an integer from 1 to 100");
+}
+return {
+errors,
+title: typeof title === "string" ? title.trim() : "",
+duration,
+};
+}
 app.get("/", (req, res) => {
 res.status(200).json({ message: "Course API is running" });
 });
-app.get("/api/courses", (req, res) => {
-res.status(200).json({ data: courses });
+// GET all courses.
+app.get("/api/courses", async (req, res, next) => {
+try {
+const result = await pool.query(
+"SELECT id, title, duration FROM courses ORDER BY id ASC"
+);
+res.status(200).json({ data: result.rows });
+} catch (err) {
+next(err);
+}
 });
-app.get("/api/courses/:id", (req, res) => {
-const id = Number(req.params.id);
-if (!Number.isInteger(id) || id <= 0)
-return res.status(400).json({ error: "id must be a positive integer" });
-const course = courses.find(c => c.id === id);
-if (!course) return res.status(404).json({ error: "Course not found" });
-res.status(200).json({ data: course });
-});
-app.post("/api/courses", (req, res) => {
-const { title, duration } = req.body || {};
-const errors = [];
 
-if (typeof title !== "string" || title.trim().length < 3)
-errors.push("title must be a string with at least 3 characters");
-if (!Number.isInteger(duration) || duration < 1 || duration > 100)
-errors.push("duration must be an integer from 1 to 100");
-if (errors.length)
-return res.status(400).json({ error: "Validation failed", details: errors });
-const course = { id: nextId++, title: title.trim(), duration };
-courses.push(course);
-res.status(201).json({ message: "Course created", data: course });
+
+
+
+
+// GET one course by ID.
+app.get("/api/courses/:id", async (req, res, next) => {
+const id = getValidId(req.params.id);
+if (id === null) {
+return res.status(400).json({
+error: "id must be a positive integer",
 });
-app.put("/api/courses/:id", (req, res) => {
-const id = Number(req.params.id);
-if (!Number.isInteger(id) || id <= 0)
-return res.status(400).json({ error: "id must be a positive integer" });
-const course = courses.find(c => c.id === id);
-if (!course) return res.status(404).json({ error: "Course not found" });
-const { title, duration } = req.body || {};
-const errors = [];
-if (typeof title !== "string" || title.trim().length < 3)
-errors.push("title must be a string with at least 3 characters");
-if (!Number.isInteger(duration) || duration < 1 || duration > 100)
-errors.push("duration must be an integer from 1 to 100");
-if (errors.length)
-return res.status(400).json({ error: "Validation failed", details: errors });
-course.title = title.trim();
-course.duration = duration;
-res.status(200).json({ message: "Course updated", data: course });
+}
+try {
+const result = await pool.query(
+"SELECT id, title, duration FROM courses WHERE id = $1",
+[id]
+);
+if (result.rows.length === 0) {
+return res.status(404).json({ error: "Course not found" });
+}
+res.status(200).json({ data: result.rows[0] });
+} catch (err) {
+next(err);
+}
 });
-app.delete("/api/courses/:id", (req, res) => {
-const id = Number(req.params.id);
-if (!Number.isInteger(id) || id <= 0)
-return res.status(400).json({ error: "id must be a positive integer" });
-const index = courses.findIndex(c => c.id === id);
-if (index === -1) return res.status(404).json({ error: "Course not found" });
-const deleted = courses.splice(index, 1)[0];
-res.status(200).json({ message: "Course deleted", data: deleted });
+// POST a new course.
+app.post("/api/courses", async (req, res, next) => {
+const { errors, title, duration } = validateCourse(req.body);
+if (errors.length) {
+return res.status(400).json({
+error: "Validation failed",
+details: errors,
 });
-// Return a JSON 404 for unknown routes.
+}
+try {
+const result = await pool.query(
+`INSERT INTO courses (title, duration)
+VALUES ($1, $2)
+RETURNING id, title, duration`,
+[title, duration]
+);
+res.status(201).json({
+message: "Course created",
+data: result.rows[0],
+});
+
+
+
+
+
+} catch (err) {
+next(err);
+}
+});
+// PUT: replace a course's title and duration.
+app.put("/api/courses/:id", async (req, res, next) => {
+const id = getValidId(req.params.id);
+if (id === null) {
+return res.status(400).json({
+error: "id must be a positive integer",
+});
+}
+const { errors, title, duration } = validateCourse(req.body);
+if (errors.length) {
+return res.status(400).json({
+error: "Validation failed",
+details: errors,
+});
+}
+try {
+const result = await pool.query(
+`UPDATE courses
+SET title = $1, duration = $2
+WHERE id = $3
+RETURNING id, title, duration`,
+[title, duration, id]
+);
+if (result.rows.length === 0) {
+return res.status(404).json({ error: "Course not found" });
+}
+res.status(200).json({
+message: "Course updated",
+data: result.rows[0],
+});
+} catch (err) {
+next(err);
+}
+});
+// DELETE a course.
+
+
+
+
+
+app.delete("/api/courses/:id", async (req, res, next) => {
+const id = getValidId(req.params.id);
+if (id === null) {
+return res.status(400).json({
+error: "id must be a positive integer",
+});
+}
+try {
+const result = await pool.query(
+`DELETE FROM courses
+WHERE id = $1
+RETURNING id, title, duration`,
+[id]
+);
+if (result.rows.length === 0) {
+return res.status(404).json({ error: "Course not found" });
+}
+res.status(200).json({
+message: "Course deleted",
+data: result.rows[0],
+});
+} catch (err) {
+next(err);
+}
+});
+// JSON response for unknown routes.
 app.use((req, res) => {
-res.status(404).json({ error: "Endpoint not found", path: req.originalUrl });
+res.status(404).json({
+error: "Endpoint not found",
+path: req.originalUrl,
+});
 });
 // Final error handler.
 app.use((err, req, res, next) => {
 console.error(err);
 res.status(500).json({ error: "Internal server error" });
 });
+// Verify the database connection before starting the server.
+async function startServer() {
+try {
+
+
+
+
+
+await pool.query("SELECT 1");
+console.log("Connected to PostgreSQL successfully.");
 app.listen(PORT, () => {
-console.log(`Course API running at http://localhost:${3000}`);
+console.log(`Course API running at http://localhost:${PORT}`);
 });
+} catch (err) {
+console.error("Could not connect to PostgreSQL:", err.message);
+process.exitCode = 1;
+}
+}
+startServer();
